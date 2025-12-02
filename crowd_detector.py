@@ -8,6 +8,14 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 import time
+import pyttsx3
+import time
+
+engine = pyttsx3.init()
+engine.setProperty('rate', 165)      # Speed (lower = slower)
+engine.setProperty('volume', 1.0)    # Volume (0 to 1)
+last_alert_time = 0
+cooldown = 5   # seconds
 
 class CrowdDetector:
     def __init__(self, model_size='n'):
