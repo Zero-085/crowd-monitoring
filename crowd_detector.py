@@ -7,14 +7,24 @@ Features:
 - Crowding intensity analysis
 - Multi-zone density tracking
 - Real-time alarm system
+- Horizontal / Vertical boundary + auto-detect (Hough)
 """
 import cv2
 import numpy as np
 from ultralytics import YOLO
 import time
-from datetime import datetime
 import threading
-import winsound  # For Windows alarm (use 'os' for Mac/Linux)
+import math
+import platform
+
+# cross-platform alarm support
+try:
+    if platform.system().lower().startswith("win"):
+        import winsound
+    else:
+        winsound = None
+except Exception:
+    winsound = None
 
 class CrowdDensityDetector:
     def __init__(self, model_size='n'):
@@ -22,9 +32,14 @@ class CrowdDensityDetector:
         Initialize advanced crowd density detector
         """
         print("🔄 Loading YOLO AI model...")
-        self.model = YOLO(f'yolov8{model_size}.pt')
+        # NOTE: user must have yolov8{size}.pt available or change to a valid model path.
+        try:
+            self.model = YOLO(f'yolov8{model_size}.pt')
+        except Exception as e:
+            print("⚠️ Warning: YOLO model load failed. Make sure the model file exists.")
+            raise e
         print("✅ Model loaded successfully!")
-        
+
         # Density thresholds (people per square meter equivalent)
         self.density_low = 0.3      # Low density
         self.density_medium = 0.6   # Medium density
@@ -36,6 +51,7 @@ class CrowdDensityDetector:
         self.density_map = None
         
         # Virtual boundary
+        # boundary_line: None or {'orientation':'horizontal'|'vertical', 'pos': int}
         self.boundary_line = None
         
         # Alarm system
@@ -56,81 +72,141 @@ class CrowdDensityDetector:
         
         # Alarm sound thread
         self.alarm_thread = None
-    
-    def set_boundary_line(self, frame_height, position=0.7):
-        """Set virtual boundary line"""
-        self.boundary_line = int(frame_height * position)
-    
+
+    def set_boundary_line(self, frame_width, frame_height, position=0.7, orientation='horizontal'):
+        """
+        Set virtual boundary line.
+        orientation: 'horizontal' -> line across width at y = frame_height * position
+                     'vertical'   -> line across height at x = frame_width * position
+        Stores as a dict: {'orientation':..., 'pos': int}
+        """
+        orientation = orientation.lower()
+        if orientation == 'vertical':
+            x = int(frame_width * position)
+            self.boundary_line = {'orientation': 'vertical', 'pos': x}
+        else:
+            y = int(frame_height * position)
+            self.boundary_line = {'orientation': 'horizontal', 'pos': y}
+
+    def auto_detect_boundary(self, frame, orientation='horizontal', debug=False):
+        """
+        Auto-detect a dominant long line using Canny + Hough.
+        orientation preference: 'horizontal' or 'vertical'
+        Sets self.boundary_line if a suitable line is found; otherwise returns False.
+        """
+        if frame is None:
+            return False
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 50, 150)
+        min_len = min(frame.shape[:2]) // 3  # require reasonably long lines
+        lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi/180, threshold=80,
+                                minLineLength=min_len, maxLineGap=40)
+        if lines is None:
+            return False
+
+        best_line = None
+        best_len = 0
+        target = orientation.lower()
+        angle_tolerance = 25  # degrees tolerance
+
+        for l in lines:
+            x1, y1, x2, y2 = l[0]
+            dx = x2 - x1
+            dy = y2 - y1
+            length = math.hypot(dx, dy)
+            angle = abs(math.degrees(math.atan2(dy, dx)))  # 0 deg horizontal, 90 deg vertical
+
+            if target == 'horizontal':
+                ang_diff = min(abs(angle - 0), abs(angle - 180))
+            else:
+                ang_diff = abs(angle - 90)
+
+            if ang_diff <= angle_tolerance and length > best_len:
+                best_len = length
+                best_line = (x1, y1, x2, y2, angle)
+
+        if best_line is None:
+            return False
+
+        x1, y1, x2, y2, _ = best_line
+        if target == 'horizontal':
+            y_mean = int((y1 + y2) / 2)
+            self.boundary_line = {'orientation': 'horizontal', 'pos': y_mean}
+        else:
+            x_mean = int((x1 + x2) / 2)
+            self.boundary_line = {'orientation': 'vertical', 'pos': x_mean}
+
+        if debug:
+            print(f"[auto_detect_boundary] set {self.boundary_line}")
+        return True
+
     def play_alarm_sound(self, alarm_type='overcrowding'):
         """
         Play alarm sound (runs in separate thread)
         alarm_type: 'overcrowding', 'violation', 'critical'
         """
         try:
-            if alarm_type == 'overcrowding':
-                # Three short beeps
-                for _ in range(3):
-                    winsound.Beep(1000, 200)  # 1000Hz, 200ms
-                    time.sleep(0.1)
-            elif alarm_type == 'violation':
-                # Two long beeps
-                for _ in range(2):
-                    winsound.Beep(1500, 400)  # 1500Hz, 400ms
-                    time.sleep(0.15)
-            elif alarm_type == 'critical':
-                # Continuous alarm (5 rapid beeps)
-                for _ in range(5):
-                    winsound.Beep(2000, 150)  # 2000Hz, 150ms
-                    time.sleep(0.05)
+            if winsound:
+                # Windows winsound
+                if alarm_type == 'overcrowding':
+                    for _ in range(3):
+                        winsound.Beep(1000, 200)
+                        time.sleep(0.1)
+                elif alarm_type == 'violation':
+                    for _ in range(2):
+                        winsound.Beep(1500, 400)
+                        time.sleep(0.15)
+                elif alarm_type == 'critical':
+                    for _ in range(5):
+                        winsound.Beep(2000, 150)
+                        time.sleep(0.05)
+            else:
+                # fallback: print (non-blocking) — sound on unix could be added if desired
+                print(f"\n🚨 ALARM: {alarm_type.upper()} 🚨")
         except Exception as e:
-            # For Mac/Linux or if winsound fails
-            print(f"\n🚨 ALARM: {alarm_type.upper()} 🚨")
-    
+            print(f"\n🚨 ALARM ERROR: {e}")
+
     def trigger_alarm(self, alarm_type='overcrowding'):
         """Trigger alarm with cooldown"""
         current_time = time.time()
         if current_time - self.last_alarm_time > self.alarm_cooldown:
-            self.alarm_active = True
             self.last_alarm_time = current_time
-            
             # Play sound in separate thread (non-blocking)
             if self.alarm_thread is None or not self.alarm_thread.is_alive():
-                self.alarm_thread = threading.Thread(
-                    target=self.play_alarm_sound, 
-                    args=(alarm_type,)
-                )
+                self.alarm_thread = threading.Thread(target=self.play_alarm_sound, args=(alarm_type,))
                 self.alarm_thread.daemon = True
                 self.alarm_thread.start()
-            
             return True
         return False
-    
+
     def detect_people(self, frame):
-        """Detect all people in frame"""
+        """Detect all people in frame and return list of detections dicts"""
         results = self.model(frame, classes=[0], verbose=False)
         boxes = results[0].boxes
-        
+
         detections = []
         for box in boxes:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            confidence = float(box.conf[0])
-            
+            confidence = float(box.conf[0]) if box.conf is not None else 0.0
+
             # Calculate center and size
             center_x = (x1 + x2) // 2
             center_y = (y1 + y2) // 2
             width = x2 - x1
             height = y2 - y1
             area = width * height
-            
+
             detections.append({
                 'box': (x1, y1, x2, y2),
                 'center': (center_x, center_y),
                 'area': area,
                 'confidence': confidence
             })
-        
+
         return detections
-    
+
     def calculate_density_map(self, frame_shape, detections):
         """
         Calculate crowd density across frame using grid-based analysis
@@ -142,8 +218,8 @@ class CrowdDensityDetector:
         density_grid = np.zeros((self.grid_rows, self.grid_cols), dtype=np.float32)
         
         # Calculate cell dimensions
-        cell_height = height // self.grid_rows
-        cell_width = width // self.grid_cols
+        cell_height = max(1, height // self.grid_rows)
+        cell_width = max(1, width // self.grid_cols)
         
         # Map each detection to grid cells
         for det in detections:
@@ -162,7 +238,7 @@ class CrowdDensityDetector:
             density_grid = density_grid / density_grid.max()
         
         return density_grid
-    
+
     def create_heatmap_overlay(self, frame, density_grid):
         """
         Create visual heatmap overlay on frame
@@ -170,46 +246,43 @@ class CrowdDensityDetector:
         height, width = frame.shape[:2]
         heatmap = np.zeros((height, width), dtype=np.float32)
         
-        cell_height = height // self.grid_rows
-        cell_width = width // self.grid_cols
+        cell_height = max(1, height // self.grid_rows)
+        cell_width = max(1, width // self.grid_cols)
         
         # Fill heatmap based on density grid
         for i in range(self.grid_rows):
             for j in range(self.grid_cols):
                 y1 = i * cell_height
-                y2 = (i + 1) * cell_height
+                y2 = min((i + 1) * cell_height, height)
                 x1 = j * cell_width
-                x2 = (j + 1) * cell_width
+                x2 = min((j + 1) * cell_width, width)
                 
                 heatmap[y1:y2, x1:x2] = density_grid[i, j]
         
         # Apply Gaussian blur for smooth heatmap
-        heatmap = cv2.GaussianBlur(heatmap, (51, 51), 0)
+        k = 51 if min(height, width) >= 51 else 11
+        heatmap = cv2.GaussianBlur(heatmap, (k, k), 0)
         
-        # Convert to color heatmap (blue=low, green=medium, red=high)
-        heatmap_colored = cv2.applyColorMap(
-            (heatmap * 255).astype(np.uint8), 
-            cv2.COLORMAP_JET
-        )
+        # Convert to color heatmap (JET is fine)
+        heatmap_colored = cv2.applyColorMap((np.clip(heatmap,0,1) * 255).astype(np.uint8), cv2.COLORMAP_JET)
         
         # Blend with original frame
         overlay = cv2.addWeighted(frame, 0.6, heatmap_colored, 0.4, 0)
         
         return overlay, heatmap
-    
+
     def analyze_crowd_density(self, density_grid, people_count, frame_area):
         """
         Analyze overall crowd density and identify critical zones
         Returns: density_level, critical_zone_count, density_score
         """
         # Calculate average density
-        avg_density = np.mean(density_grid)
+        avg_density = np.mean(density_grid) if density_grid.size > 0 else 0.0
         
         # Count critical zones (high density cells)
-        critical_zones = np.sum(density_grid > self.density_high)
+        critical_zones = int(np.sum(density_grid > self.density_high)) if density_grid.size > 0 else 0
         
         # Calculate density score (0-100)
-        # Based on: average density + people concentration + critical zones
         density_score = (
             avg_density * 50 +  # Base density
             (critical_zones / (self.grid_rows * self.grid_cols)) * 30 +  # Critical zone ratio
@@ -231,20 +304,28 @@ class CrowdDensityDetector:
             color = (0, 0, 255)  # Red
         
         return level, color, critical_zones, density_score
-    
+
     def check_boundary_violations(self, detections):
-        """Check boundary violations"""
-        if self.boundary_line is None:
+        """Check boundary violations for both horizontal and vertical boundaries."""
+        if not self.boundary_line:
             return False, []
-        
+        orient = self.boundary_line.get('orientation', 'horizontal')
+        pos = self.boundary_line.get('pos', None)
+        if pos is None:
+            return False, []
         violators = []
         for det in detections:
             cx, cy = det['center']
-            if cy > self.boundary_line:
-                violators.append(det)
-        
+            if orient == 'vertical':
+                # default: crossing to right side (cx > pos) is violation
+                if cx > pos:
+                    violators.append(det)
+            else:
+                # default: crossing below line (cy > pos) is violation
+                if cy > pos:
+                    violators.append(det)
         return len(violators) > 0, violators
-    
+
     def draw_visualization(self, frame, detections, show_heatmap=True, show_boundary=True):
         """
         Draw comprehensive visualization with density heatmap
@@ -278,21 +359,25 @@ class CrowdDensityDetector:
         
         # Calculate average
         if self.stats['density_history']:
-            self.stats['avg_density'] = np.mean(self.stats['density_history'])
+            self.stats['avg_density'] = float(np.mean(self.stats['density_history']))
         
         # Check violations
         has_violation, violators = self.check_boundary_violations(detections)
         if has_violation:
             self.stats['violations'] += 1
         
-        # Draw boundary line
+        # Draw boundary line (horizontal or vertical)
         if show_boundary and self.boundary_line:
-            cv2.line(vis_frame, (0, self.boundary_line), 
-                    (frame.shape[1], self.boundary_line), 
-                    (0, 0, 255), 4)
-            cv2.putText(vis_frame, '🚫 RESTRICTED ZONE', 
-                       (10, self.boundary_line - 15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
+            orient = self.boundary_line.get('orientation', 'horizontal')
+            pos = self.boundary_line.get('pos')
+            if orient == 'vertical':
+                cv2.line(vis_frame, (pos, 0), (pos, vis_frame.shape[0]), (0, 0, 255), 4)
+                cv2.putText(vis_frame, '🚫 RESTRICTED ZONE', (max(10, pos+10), 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            else:
+                cv2.line(vis_frame, (0, pos), (vis_frame.shape[1], pos), (0, 0, 255), 4)
+                cv2.putText(vis_frame, '🚫 RESTRICTED ZONE', (10, max(20, pos-15)),
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
         
         # Draw detections with special marking for violators
         for det in detections:
@@ -390,17 +475,16 @@ class CrowdDensityDetector:
         
         # Show alarm indicator
         if alarm_triggered or (time.time() - self.last_alarm_time < 1.0):
-            # Flash alarm indicator
             alarm_panel_y = vis_frame.shape[0] - 100
             cv2.rectangle(vis_frame, (0, alarm_panel_y), 
                          (vis_frame.shape[1], vis_frame.shape[0]), 
                          (0, 0, 255), -1)
             cv2.putText(vis_frame, f'🚨 ALARM: {alarm_type if alarm_type else "ACTIVE"} 🚨', 
-                       (vis_frame.shape[1]//2 - 250, alarm_panel_y + 50),
+                       (max(10, vis_frame.shape[1]//2 - 250), alarm_panel_y + 50),
                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
         
         return vis_frame, density_level, density_score, has_violation, alarm_triggered
-    
+
     def process_video(self, video_source=0, save_output=False, show_heatmap=True):
         """
         Main processing loop with density analysis
@@ -419,8 +503,8 @@ class CrowdDensityDetector:
         
         print(f"📐 Video size: {frame_width}x{frame_height} @ {fps} FPS")
         
-        # Set boundary
-        self.set_boundary_line(frame_height, position=0.70)
+        # Set boundary default, allow override later
+        self.set_boundary_line(frame_width, frame_height, position=0.70, orientation='horizontal')
         
         # Setup video writer
         writer = None
@@ -499,20 +583,19 @@ class CrowdDensityDetector:
         print(f"Average FPS: {current_fps:.1f}")
         print("="*60 + "\n")
 
-
 # Test mode
 if __name__ == "__main__":
     print("\n" + "="*60)
     print("🚨 ADVANCED CROWD DENSITY MONITORING SYSTEM")
     print("="*60 + "\n")
-    
+
     detector = CrowdDensityDetector(model_size='n')
-    
+
     print("Select video source:")
     print("1. Webcam")
     print("2. Video file")
     choice = input("\nEnter choice (1 or 2): ").strip()
-    
+
     if choice == '1':
         detector.process_video(video_source=0, save_output=False, show_heatmap=True)
     elif choice == '2':

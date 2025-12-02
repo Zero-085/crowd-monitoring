@@ -86,6 +86,13 @@ if 'detector' not in st.session_state:
     st.session_state.show_heatmap = True
     st.session_state.alarm_enabled = True
     st.session_state.alarm_count = 0
+    # store boundary UI settings; used later to set detector boundary
+    st.session_state.boundary_ui = {
+        'show': True,
+        'orientation': 'horizontal',
+        'pct': 0.70,
+        'auto': False
+    }
 
 def create_density_gauge(density_score):
     """Create a gauge chart for density score"""
@@ -188,19 +195,37 @@ def main():
         
         # Visualization options
         st.subheader("🎨 Visualization")
-        st.session_state.show_heatmap = st.checkbox("Show Density Heatmap", value=True)
-        show_boundary = st.checkbox("Show Boundary Line", value=True)
+        st.session_state.show_heatmap = st.checkbox("Show Density Heatmap", value=st.session_state.show_heatmap)
+        show_boundary = st.checkbox("Show Boundary Line", value=st.session_state.boundary_ui['show'])
         
+        # Boundary orientation and control
+        col_orient, col_auto = st.columns([2,1])
+        with col_orient:
+            orientation = st.radio("Boundary Orientation", ["Horizontal", "Vertical"], index=0)
+        with col_auto:
+            auto_detect = st.checkbox("Auto-detect boundary", value=st.session_state.boundary_ui.get('auto', False))
+        
+        # slider mapping: always show percent 5-95
         if show_boundary:
-            boundary_pos = st.slider("Boundary Position (%)", 30, 90, 70) / 100
+            if orientation == "Horizontal":
+                # slider semantics: user moves slider horizontally in UI but it controls Y-axis (% of height)
+                boundary_pct = st.slider("Boundary Position (Up / Down) (%)", 5, 95, int(st.session_state.boundary_ui.get('pct', 0.70)*100))
+            else:
+                boundary_pct = st.slider("Boundary Position (Left / Right) (%)", 5, 95, int(st.session_state.boundary_ui.get('pct', 0.70)*100))
         else:
-            boundary_pos = 0.70
+            boundary_pct = int(st.session_state.boundary_ui.get('pct', 0.70)*100)
+        
+        # Save UI selection to session_state
+        st.session_state.boundary_ui['show'] = show_boundary
+        st.session_state.boundary_ui['orientation'] = orientation.lower()
+        st.session_state.boundary_ui['pct'] = boundary_pct / 100.0
+        st.session_state.boundary_ui['auto'] = bool(auto_detect)
         
         st.divider()
         
         # Alarm settings
         st.subheader("🔔 Alarm System")
-        st.session_state.alarm_enabled = st.checkbox("Enable Audio Alarms", value=True)
+        st.session_state.alarm_enabled = st.checkbox("Enable Audio Alarms", value=st.session_state.alarm_enabled)
         alarm_cooldown = st.slider("Alarm Cooldown (sec)", 1, 10, 3)
         st.session_state.detector.alarm_cooldown = alarm_cooldown
         
@@ -318,11 +343,27 @@ def main():
             st.session_state.running = False
             st.stop()
         
+        # read frame dims
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if show_boundary:
-            st.session_state.detector.set_boundary_line(frame_height, boundary_pos)
-        else:
+        
+        # Configure detector boundary based on UI
+        b = st.session_state.boundary_ui
+        if not b['show']:
             st.session_state.detector.boundary_line = None
+        else:
+            # If auto-detect requested: try to read one sample frame and detect
+            if b.get('auto', False):
+                ret_sample, sample_frame = cap.read()
+                if ret_sample:
+                    detected = st.session_state.detector.auto_detect_boundary(sample_frame, orientation=b['orientation'])
+                    # if auto-detect failed, fallback to pct
+                    if not detected:
+                        st.session_state.detector.set_boundary_line(frame_width, frame_height, b['pct'], orientation=b['orientation'])
+                else:
+                    st.session_state.detector.set_boundary_line(frame_width, frame_height, b['pct'], orientation=b['orientation'])
+            else:
+                st.session_state.detector.set_boundary_line(frame_width, frame_height, b['pct'], orientation=b['orientation'])
         
         # Disable alarm if not enabled
         if not st.session_state.alarm_enabled:
@@ -346,7 +387,7 @@ def main():
                 st.session_state.detector.draw_visualization(
                     frame, detections,
                     show_heatmap=st.session_state.show_heatmap,
-                    show_boundary=show_boundary
+                    show_boundary=b['show']
                 )
             
             # Convert to RGB
@@ -378,9 +419,16 @@ def main():
                 )
                 if show_toast:
                     if violation:
-                        st.toast("🚧 BOUNDARY VIOLATION!", icon="🚨")
+                        # toast IDs can collide; leave without key (Streamlit manages)
+                        try:
+                            st.toast("🚧 BOUNDARY VIOLATION!", icon="🚨")
+                        except:
+                            pass
                     else:
-                        st.toast(f"⚠️ {density_level} DENSITY ALERT!", icon="🔴")
+                        try:
+                            st.toast(f"⚠️ {density_level} DENSITY ALERT!", icon="🔴")
+                        except:
+                            pass
             else:
                 alarm_placeholder.empty()
             
@@ -413,8 +461,10 @@ def main():
             frame_placeholder.image(vis_frame_rgb, use_container_width=True)
             
             # Update gauge
+            # produce a unique key each frame to avoid Streamlit Duplicate ID issues
+            key_gauge = f"gauge_{st.session_state.frame_count}_{int(time.time()*1000)}"
             gauge_fig = create_density_gauge(density_score)
-            gauge_placeholder.plotly_chart(gauge_fig, use_container_width=True)
+            gauge_placeholder.plotly_chart(gauge_fig, use_container_width=True, key=key_gauge)
             
             # Update statistics
             stats_data = {
@@ -447,8 +497,11 @@ def main():
             if len(st.session_state.history) > 2:
                 df = pd.DataFrame(st.session_state.history)
                 
-                # Timeline chart
-                timeline_chart.line_chart(df.set_index('time')['density'], use_container_width=True)
+                # Timeline chart (use streamlit line_chart for simplicity)
+                try:
+                    timeline_chart.line_chart(df.set_index('time')['density'], use_container_width=True)
+                except Exception:
+                    pass
                 
                 # Distribution chart
                 density_ranges = ['LOW (0-30)', 'MODERATE (30-60)', 'HIGH (60-80)', 'CRITICAL (80-100)']
@@ -471,7 +524,8 @@ def main():
                     yaxis_title="Frame Count",
                     height=300
                 )
-                distribution_chart.plotly_chart(dist_fig, use_container_width=True)
+                key_dist = f"dist_{st.session_state.frame_count}_{int(time.time()*1000)}"
+                distribution_chart.plotly_chart(dist_fig, use_container_width=True, key=key_dist)
             
             # Snapshot
             if snapshot_btn:
@@ -479,6 +533,7 @@ def main():
                 cv2.imwrite(snap_path, vis_frame)
                 st.success(f"📸 Saved: {snap_path}")
             
+            # tiny sleep to avoid 100% CPU in some cases
             time.sleep(0.01)
         
         cap.release()
@@ -518,7 +573,6 @@ def main():
             - Tracks multiple hotspots
             - Boundary violation alerts
             
-            
             ### 💡 What Makes This Unique
             
             ✨ **Beyond Simple Counting**: Analyzes spatial distribution  
@@ -527,6 +581,5 @@ def main():
             ✨ **Scalable Architecture**: Works on edge devices  
             ✨ **Real-World Ready**: Tested for public safety scenarios
             """)
-
 if __name__ == "__main__":
     main()
