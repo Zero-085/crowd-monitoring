@@ -394,8 +394,8 @@ def main():
             vis_frame_rgb = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
             
             # Update metrics
-            people_metric.metric("👥 People", people_count)
-            density_metric.metric("📊 Density", f"{density_score:.1f}/100")
+            people_metric.metric("People", people_count)
+            density_metric.metric("Density", f"{density_score:.1f}/100")
             
             level_colors = {
                 'LOW': '🟢',
@@ -403,30 +403,30 @@ def main():
                 'HIGH': '🟠',
                 'CRITICAL': '🔴'
             }
-            level_metric.metric("🎯 Level", f"{level_colors.get(density_level, '⚪')} {density_level}")
+            level_metric.metric("Level", f"{level_colors.get(density_level, '⚪')} {density_level}")
             
-            zones_metric.metric("⚠️ Critical Zones", 
+            zones_metric.metric("Critical Zones", 
                               st.session_state.detector.stats['critical_zones'])
-            violation_metric.metric("🚧 Violations", 
+            violation_metric.metric("Violations", 
                                    st.session_state.detector.stats['violations'])
             
             # Show alarm banner
             if alarm:
                 st.session_state.alarm_count += 1
                 alarm_placeholder.markdown(
-                    '<div class="alarm-box">🚨 ALARM ACTIVE 🚨</div>',
+                    '<div class="alarm-box">ALARM ACTIVE</div>',
                     unsafe_allow_html=True
                 )
                 if show_toast:
                     if violation:
                         # toast IDs can collide; leave without key (Streamlit manages)
                         try:
-                            st.toast("🚧 BOUNDARY VIOLATION!", icon="🚨")
+                            st.toast("BOUNDARY VIOLATION!", icon="🚨")
                         except:
                             pass
                     else:
                         try:
-                            st.toast(f"⚠️ {density_level} DENSITY ALERT!", icon="🔴")
+                            st.toast(f"{density_level} DENSITY ALERT!", icon="🔴")
                         except:
                             pass
             else:

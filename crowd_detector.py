@@ -164,9 +164,9 @@ class CrowdDensityDetector:
                         time.sleep(0.05)
             else:
                 # fallback: print (non-blocking) — sound on unix could be added if desired
-                print(f"\n🚨 ALARM: {alarm_type.upper()} 🚨")
+                print(f"\nALARM: {alarm_type.upper()}")
         except Exception as e:
-            print(f"\n🚨 ALARM ERROR: {e}")
+            print(f"\nALARM ERROR: {e}")
 
     def trigger_alarm(self, alarm_type='overcrowding'):
         """Trigger alarm with cooldown"""
@@ -372,11 +372,11 @@ class CrowdDensityDetector:
             pos = self.boundary_line.get('pos')
             if orient == 'vertical':
                 cv2.line(vis_frame, (pos, 0), (pos, vis_frame.shape[0]), (0, 0, 255), 4)
-                cv2.putText(vis_frame, '🚫 RESTRICTED ZONE', (max(10, pos+10), 30),
+                cv2.putText(vis_frame, 'RESTRICTED ZONE', (max(10, pos+10), 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             else:
                 cv2.line(vis_frame, (0, pos), (vis_frame.shape[1], pos), (0, 0, 255), 4)
-                cv2.putText(vis_frame, '🚫 RESTRICTED ZONE', (10, max(20, pos-15)),
+                cv2.putText(vis_frame, 'RESTRICTED ZONE', (10, max(20, pos-15)),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
         
         # Draw detections with special marking for violators
@@ -394,7 +394,7 @@ class CrowdDensityDetector:
             cv2.circle(vis_frame, (cx, cy), 4, box_color, -1)
             
             if is_violator:
-                cv2.putText(vis_frame, '⚠️ VIOLATION', (x1, y1 - 10),
+                cv2.putText(vis_frame, 'VIOLATION', (x1, y1 - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         
         # Draw info panel with density information
@@ -408,12 +408,12 @@ class CrowdDensityDetector:
         y_pos = 35
         
         # People count
-        cv2.putText(vis_frame, f'👥 People Count: {people_count}', 
+        cv2.putText(vis_frame, f'People Count: {people_count}', 
                    (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         y_pos += 40
         # Density score with bar
-        cv2.putText(vis_frame, f'📊 Density Score: {density_score:.1f}/100', 
+        cv2.putText(vis_frame, f'Density Score: {density_score:.1f}/100', 
                    (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         # Density bar
@@ -429,26 +429,26 @@ class CrowdDensityDetector:
         
         y_pos += 50
         # Density level
-        cv2.putText(vis_frame, f'🎯 Density: {density_level}', 
+        cv2.putText(vis_frame, f'Density: {density_level}', 
                    (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.9, density_color, 3)
         
         y_pos += 45
         # Critical zones
         critical_color = (0, 0, 255) if critical_zones > 0 else (0, 255, 0)
-        cv2.putText(vis_frame, f'⚠️ Critical Zones: {critical_zones}', 
+        cv2.putText(vis_frame, f'Critical Zones: {critical_zones}', 
                    (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, critical_color, 2)
         
         y_pos += 40
         # Violations
         if has_violation:
-            cv2.putText(vis_frame, f'🚨 VIOLATIONS: {len(violators)}', 
+            cv2.putText(vis_frame, f'VIOLATIONS: {len(violators)}', 
                        (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
             # Flash effect for violations
             if int(time.time() * 2) % 2 == 0:
                 cv2.rectangle(vis_frame, (0, 0), (vis_frame.shape[1], vis_frame.shape[0]),
                              (0, 0, 255), 15)
         else:
-            cv2.putText(vis_frame, '✅ No Violations', 
+            cv2.putText(vis_frame, 'No Violations', 
                        (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Trigger alarms based on conditions
@@ -479,7 +479,7 @@ class CrowdDensityDetector:
             cv2.rectangle(vis_frame, (0, alarm_panel_y), 
                          (vis_frame.shape[1], vis_frame.shape[0]), 
                          (0, 0, 255), -1)
-            cv2.putText(vis_frame, f'🚨 ALARM: {alarm_type if alarm_type else "ACTIVE"} 🚨', 
+            cv2.putText(vis_frame, f'ALARM: {alarm_type if alarm_type else "ACTIVE"}', 
                        (max(10, vis_frame.shape[1]//2 - 250), alarm_panel_y + 50),
                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
         
@@ -501,7 +501,7 @@ class CrowdDensityDetector:
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
         
-        print(f"📐 Video size: {frame_width}x{frame_height} @ {fps} FPS")
+        print(f"Video size: {frame_width}x{frame_height} @ {fps} FPS")
         
         # Set boundary default, allow override later
         self.set_boundary_line(frame_width, frame_height, position=0.70, orientation='horizontal')
@@ -547,7 +547,7 @@ class CrowdDensityDetector:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             
             # Show frame
-            cv2.imshow('🚨 Crowd Density Monitoring - Press Q to quit', vis_frame)
+            cv2.imshow('Crowd Density Monitoring - Press Q to quit', vis_frame)
             
             # Save if enabled
             if writer:
@@ -586,7 +586,7 @@ class CrowdDensityDetector:
 # Test mode
 if __name__ == "__main__":
     print("\n" + "="*60)
-    print("🚨 ADVANCED CROWD DENSITY MONITORING SYSTEM")
+    print("ADVANCED CROWD DENSITY MONITORING SYSTEM")
     print("="*60 + "\n")
 
     detector = CrowdDensityDetector(model_size='n')
