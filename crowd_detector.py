@@ -76,6 +76,17 @@ class CrowdDensityDetector:
             'violations': 0
         }
         
+        # NEW: Predictive Risk Analysis
+        self.prediction_window = 10  # Analyze last 10 frames
+        self.density_trend = []
+        self.risk_prediction = {
+            'accident_probability': 0.0,
+            'time_to_critical': None,
+            'risk_level': 'SAFE',
+            'trend': 'STABLE',
+            'recommendation': 'Normal monitoring'
+        }
+        
         # Alarm sound thread
         self.alarm_thread = None
     
@@ -278,6 +289,126 @@ class CrowdDensityDetector:
         
         return level, color, critical_zones, density_score
     
+    def predict_accident_risk(self, current_density, density_history):
+        """
+        PREDICTIVE FEATURE: Analyze density trends to predict accident probability
+        
+        Returns:
+        - accident_probability (0-100): Likelihood of accident in next 2-5 minutes
+        - time_to_critical: Estimated seconds until critical density
+        - risk_level: SAFE, LOW, MODERATE, HIGH, IMMINENT
+        - trend: DECREASING, STABLE, INCREASING, RAPIDLY_INCREASING
+        - recommendation: Action to take
+        """
+        
+        if len(density_history) < 3:
+            return {
+                'accident_probability': 0.0,
+                'time_to_critical': None,
+                'risk_level': 'SAFE',
+                'trend': 'STABLE',
+                'recommendation': 'Insufficient data for prediction'
+            }
+        
+        # Use last N frames for prediction
+        recent_density = density_history[-self.prediction_window:] if len(density_history) >= self.prediction_window else density_history
+        
+        # Calculate trend (rate of change)
+        if len(recent_density) >= 2:
+            # Linear regression to find trend
+            x = np.arange(len(recent_density))
+            y = np.array(recent_density)
+            
+            # Calculate slope (rate of density increase)
+            if len(x) > 1:
+                slope = np.polyfit(x, y, 1)[0]
+            else:
+                slope = 0
+            
+            # Calculate acceleration (is it speeding up?)
+            if len(recent_density) >= 4:
+                first_half_avg = np.mean(recent_density[:len(recent_density)//2])
+                second_half_avg = np.mean(recent_density[len(recent_density)//2:])
+                acceleration = second_half_avg - first_half_avg
+            else:
+                acceleration = 0
+        else:
+            slope = 0
+            acceleration = 0
+        
+        # Determine trend
+        if slope < -2:
+            trend = 'DECREASING'
+        elif slope < 2:
+            trend = 'STABLE'
+        elif slope < 5:
+            trend = 'INCREASING'
+        else:
+            trend = 'RAPIDLY_INCREASING'
+        
+        # Calculate time to critical (extrapolation)
+        time_to_critical = None
+        critical_threshold = 85 if self.demo_mode else 80
+        
+        if slope > 0.5 and current_density < critical_threshold:
+            # Estimate time to reach critical density
+            density_gap = critical_threshold - current_density
+            # Assuming 30 FPS, convert frames to seconds
+            frames_to_critical = density_gap / slope
+            time_to_critical = int(frames_to_critical / 30)  # Convert to seconds
+            
+            # Cap at reasonable values
+            time_to_critical = max(10, min(time_to_critical, 600))  # Between 10s and 10min
+        
+        # Calculate accident probability (0-100)
+        # Factors:
+        # 1. Current density level (40% weight)
+        # 2. Rate of increase (30% weight)
+        # 3. Acceleration (20% weight)
+        # 4. Critical zones (10% weight)
+        
+        density_factor = min(current_density / 100, 1.0) * 40
+        
+        # Slope factor (rapid increase = higher risk)
+        slope_factor = min(abs(slope) / 10, 1.0) * 30 if slope > 0 else 0
+        
+        # Acceleration factor (accelerating increase = danger)
+        accel_factor = min(abs(acceleration) / 20, 1.0) * 20 if acceleration > 0 else 0
+        
+        # Critical zones factor
+        critical_zones_ratio = self.stats['critical_zones'] / (self.grid_rows * self.grid_cols)
+        zones_factor = critical_zones_ratio * 10
+        
+        accident_probability = density_factor + slope_factor + accel_factor + zones_factor
+        accident_probability = min(accident_probability, 100)
+        
+        # Determine risk level
+        if accident_probability < 20:
+            risk_level = 'SAFE'
+            recommendation = 'Normal monitoring. No action needed.'
+        elif accident_probability < 40:
+            risk_level = 'LOW'
+            recommendation = 'Monitor closely. Prepare crowd control measures.'
+        elif accident_probability < 60:
+            risk_level = 'MODERATE'
+            recommendation = 'Alert security staff. Consider restricting entry.'
+        elif accident_probability < 80:
+            risk_level = 'HIGH'
+            recommendation = '⚠️ URGENT: Stop entry immediately. Deploy crowd control.'
+        else:
+            risk_level = 'IMMINENT'
+            recommendation = 'CRITICAL: EVACUATION NEEDED! Accident likely within 2 minutes!'
+        
+        return {
+            'accident_probability': round(accident_probability, 1),
+            'time_to_critical': time_to_critical,
+            'risk_level': risk_level,
+            'trend': trend,
+            'recommendation': recommendation,
+            'slope': round(slope, 2),
+            'acceleration': round(acceleration, 2)
+        }
+    
     def check_boundary_violations(self, detections):
         """Check boundary violations"""
         if self.boundary_line is None:
@@ -326,6 +457,9 @@ class CrowdDensityDetector:
         if self.stats['density_history']:
             self.stats['avg_density'] = np.mean(self.stats['density_history'])
         
+        # NEW: Predict accident risk based on density trends
+        self.risk_prediction = self.predict_accident_risk(density_score, self.stats['density_history'])
+        
         # Check violations
         has_violation, violators = self.check_boundary_violations(detections)
         if has_violation:
@@ -359,8 +493,8 @@ class CrowdDensityDetector:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         
         # Draw info panel with density information
-        panel_h = 250
-        panel_w = 500
+        panel_h = 350  # Increased height for prediction info
+        panel_w = 550
         overlay = vis_frame.copy()
         cv2.rectangle(overlay, (0, 0), (panel_w, panel_h), (0, 0, 0), -1)
         vis_frame = cv2.addWeighted(vis_frame, 0.5, overlay, 0.5, 0)
@@ -409,25 +543,42 @@ class CrowdDensityDetector:
                 cv2.rectangle(vis_frame, (0, 0), (vis_frame.shape[1], vis_frame.shape[0]),
                              (0, 0, 255), 15)
         else:
-            cv2.putText(vis_frame, 'No Violations', 
+            cv2.putText(vis_frame, '✅ No Violations', 
                        (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Trigger alarms based on conditions
         alarm_triggered = False
         alarm_type = None
         
-        if has_violation:
+        # PRIORITY 1: Imminent risk prediction (NEW!)
+        if self.risk_prediction['risk_level'] == 'IMMINENT':
+            if self.trigger_alarm('critical'):
+                alarm_triggered = True
+                alarm_type = 'IMMINENT ACCIDENT RISK!'
+                self.stats['alerts_triggered'] += 1
+        
+        # PRIORITY 2: Boundary violations
+        elif has_violation:
             if self.trigger_alarm('violation'):
                 alarm_triggered = True
                 alarm_type = 'BOUNDARY VIOLATION'
                 self.stats['alerts_triggered'] += 1
         
+        # PRIORITY 3: High accident probability (NEW!)
+        elif self.risk_prediction['accident_probability'] > 70:
+            if self.trigger_alarm('critical'):
+                alarm_triggered = True
+                alarm_type = f'HIGH ACCIDENT RISK ({self.risk_prediction["accident_probability"]:.0f}%)'
+                self.stats['alerts_triggered'] += 1
+        
+        # PRIORITY 4: Critical density
         elif density_level == 'CRITICAL':
             if self.trigger_alarm('critical'):
                 alarm_triggered = True
                 alarm_type = 'CRITICAL DENSITY'
                 self.stats['alerts_triggered'] += 1
         
+        # PRIORITY 5: High density with critical zones
         elif density_level == 'HIGH' and critical_zones > 3:
             if self.trigger_alarm('overcrowding'):
                 alarm_triggered = True
@@ -447,9 +598,15 @@ class CrowdDensityDetector:
         
         return vis_frame, density_level, density_score, has_violation, alarm_triggered
     
-    def process_video(self, video_source=0, save_output=False, show_heatmap=True):
+    def process_video(self, video_source=0, save_output=False, show_heatmap=True, boundary_mode='percentage'):
         """
         Main processing loop with density analysis
+        
+        boundary_mode options:
+        - 'auto': Try automatic detection
+        - 'manual': User clicks to set
+        - 'percentage': Fixed percentage (70%)
+        - 'none': No boundary detection
         """
         print(f"\n🎥 Opening video source: {video_source}")
         cap = cv2.VideoCapture(video_source)
@@ -465,8 +622,34 @@ class CrowdDensityDetector:
         
         print(f"Video size: {frame_width}x{frame_height} @ {fps} FPS")
         
-        # Set boundary
-        self.set_boundary_line(frame_height, position=0.70)
+        # Get first frame for boundary setup
+        ret, first_frame = cap.read()
+        if not ret:
+            print("❌ Cannot read first frame!")
+            return
+        
+        # Set up boundary based on mode
+        if boundary_mode != 'none':
+            print(f"\n🚧 Boundary Detection Mode: {boundary_mode.upper()}")
+            
+            if boundary_mode == 'auto':
+                success = self.set_boundary_line(frame_height, frame=first_frame, mode='auto')
+                if not success:
+                    print("⚠️  Auto-detection failed. Try manual mode? (y/n)")
+                    choice = input().strip().lower()
+                    if choice == 'y':
+                        self.set_boundary_line(frame_height, frame=first_frame, mode='manual')
+                    else:
+                        self.set_boundary_line(frame_height, position=0.70, mode='percentage')
+            
+            elif boundary_mode == 'manual':
+                self.set_boundary_line(frame_height, frame=first_frame, mode='manual')
+            
+            else:  # percentage
+                self.set_boundary_line(frame_height, position=0.70, mode='percentage')
+        
+        # Reset video to beginning
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
         
         # Setup video writer
         writer = None
@@ -509,7 +692,7 @@ class CrowdDensityDetector:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
             
             # Show frame
-            cv2.imshow('Crowd Density Monitoring - Press Q to quit', vis_frame)
+            cv2.imshow('🚨 Crowd Density Monitoring - Press Q to quit', vis_frame)
             
             # Save if enabled
             if writer:
@@ -522,10 +705,10 @@ class CrowdDensityDetector:
             elif key == ord('s'):
                 screenshot_name = f'density_screenshot_{int(time.time())}.jpg'
                 cv2.imwrite(screenshot_name, vis_frame)
-                print(f"Screenshot saved: {screenshot_name}")
+                print(f"📸 Screenshot saved: {screenshot_name}")
             elif key == ord('h'):
                 show_heatmap = not show_heatmap
-                print(f"Heatmap: {'ON' if show_heatmap else 'OFF'}")
+                print(f"🗺️  Heatmap: {'ON' if show_heatmap else 'OFF'}")
         
         # Cleanup
         cap.release()
@@ -567,10 +750,28 @@ if __name__ == "__main__":
     choice = input("\nEnter choice (1 or 2): ").strip()
     
     if choice == '1':
-        detector.process_video(video_source=0, save_output=False, show_heatmap=True)
+        video_src = 0
     elif choice == '2':
-        video_path = input("Enter video file path: ").strip()
-        detector.process_video(video_source=video_path, save_output=True, show_heatmap=True)
+        video_src = input("Enter video file path: ").strip()
     else:
         print("Invalid choice. Using webcam...")
-        detector.process_video(video_source=0, save_output=False, show_heatmap=True)
+        video_src = 0
+    
+    # Boundary detection mode
+    print("\nBoundary detection mode:")
+    print("1. Auto-detect (finds platform edges automatically)")
+    print("2. Manual (click to set)")
+    print("3. Default 70% (simple horizontal line)")
+    print("4. No boundary detection")
+    boundary_choice = input("\nEnter choice (1-4): ").strip()
+    
+    boundary_modes = {
+        '1': 'auto',
+        '2': 'manual',
+        '3': 'percentage',
+        '4': 'none'
+    }
+    boundary_mode = boundary_modes.get(boundary_choice, 'percentage')
+    
+    detector.process_video(video_source=video_src, save_output=(choice=='2'), 
+                          show_heatmap=True, boundary_mode=boundary_mode)

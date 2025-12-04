@@ -87,6 +87,8 @@ if 'detector' not in st.session_state:
     st.session_state.show_heatmap = True
     st.session_state.alarm_enabled = True
     st.session_state.alarm_count = 0
+    st.session_state.boundary_pos = 0.70
+    st.session_state.boundary_setup_mode = 'percentage'
 
 def create_density_gauge(density_score):
     """Create a gauge chart for density score"""
@@ -253,7 +255,7 @@ def main():
         """)
     
     # Main metrics
-    metric_cols = st.columns(5)
+    metric_cols = st.columns(6)  # Added one more column
     
     with metric_cols[0]:
         people_metric = st.empty()
@@ -265,6 +267,8 @@ def main():
         zones_metric = st.empty()
     with metric_cols[4]:
         violation_metric = st.empty()
+    with metric_cols[5]:
+        risk_metric = st.empty()  # NEW: Risk prediction
     
     # Initialize metrics
     people_metric.metric("👥 People", 0)
@@ -272,6 +276,7 @@ def main():
     level_metric.metric("🎯 Level", "LOW")
     zones_metric.metric("⚠️ Critical Zones", 0)
     violation_metric.metric("🚧 Violations", 0)
+    risk_metric.metric("🔮 Accident Risk", "0%")  # NEW
     
     st.divider()
     
@@ -299,6 +304,9 @@ def main():
     with right_col:
         st.subheader("📊 Density Gauge")
         gauge_placeholder = st.empty()
+        
+        st.subheader("🔮 Risk Prediction")  # NEW
+        risk_panel = st.empty()
         
         st.subheader("📈 Statistics")
         stats_placeholder = st.empty()
@@ -353,9 +361,29 @@ def main():
             st.stop()
         
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        if show_boundary:
-            st.session_state.detector.set_boundary_line(frame_height, boundary_pos)
-        else:
+        
+        # Set up boundary based on mode
+        if st.session_state.boundary_setup_mode == 'auto':
+            # Get first frame for auto-detection
+            ret, first_frame = cap.read()
+            if ret:
+                with st.spinner("🔍 Auto-detecting boundary..."):
+                    # Try to use new auto-detection if available
+                    if hasattr(st.session_state.detector, 'detect_boundary_automatically'):
+                        detected_y = st.session_state.detector.detect_boundary_automatically(first_frame)
+                        if detected_y:
+                            st.session_state.detector.boundary_line = detected_y
+                            st.success(f"✅ Boundary auto-detected at {int(detected_y/frame_height*100)}%")
+                        else:
+                            st.warning("⚠️ Auto-detection failed. Using default 70%")
+                            st.session_state.detector.boundary_line = int(frame_height * 0.70)
+                    else:
+                        st.warning("⚠️ Auto-detection not available. Using default 70%")
+                        st.session_state.detector.boundary_line = int(frame_height * 0.70)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
+        elif st.session_state.boundary_setup_mode == 'percentage':
+            st.session_state.detector.boundary_line = int(frame_height * st.session_state.boundary_pos)
+        elif st.session_state.boundary_setup_mode == 'none':
             st.session_state.detector.boundary_line = None
         
         # Disable alarm if not enabled
@@ -403,6 +431,15 @@ def main():
             violation_metric.metric("🚧 Violations", 
                                    st.session_state.detector.stats['violations'])
             
+            # NEW: Risk prediction metric
+            risk_prob = st.session_state.detector.risk_prediction['accident_probability']
+            risk_level = st.session_state.detector.risk_prediction['risk_level']
+            risk_delta = "⚠️ Action needed!" if risk_prob > 60 else None
+            risk_metric.metric("🔮 Accident Risk", 
+                             f"{risk_prob:.0f}%",
+                             delta=risk_delta,
+                             delta_color="inverse" if risk_prob > 60 else "normal")
+            
             # Show alarm banner
             if alarm:
                 st.session_state.alarm_count += 1
@@ -449,6 +486,34 @@ def main():
             # Update gauge
             gauge_fig = create_density_gauge(density_score)
             gauge_placeholder.plotly_chart(gauge_fig, use_container_width=True, key=f"gauge_{st.session_state.frame_count}")
+            
+            # NEW: Update risk prediction panel
+            risk_pred = st.session_state.detector.risk_prediction
+            risk_color = "🟢" if risk_pred['risk_level'] == 'SAFE' else "🟡" if risk_pred['risk_level'] == 'LOW' else "🟠" if risk_pred['risk_level'] == 'MODERATE' else "🔴"
+            
+            trend_arrow = "📉" if risk_pred['trend'] == 'DECREASING' else "➡️" if risk_pred['trend'] == 'STABLE' else "📈" if risk_pred['trend'] == 'INCREASING' else "⚠️"
+            
+            risk_info = f"""
+            **{risk_color} Risk Level:** {risk_pred['risk_level']}  
+            **{trend_arrow} Trend:** {risk_pred['trend']}  
+            **🎯 Probability:** {risk_pred['accident_probability']:.1f}%  
+            """
+            
+            if risk_pred['time_to_critical']:
+                ttc = risk_pred['time_to_critical']
+                if ttc < 60:
+                    risk_info += f"**⏰ Time to Critical:** {ttc}s  \n"
+                else:
+                    risk_info += f"**⏰ Time to Critical:** {ttc//60}m {ttc%60}s  \n"
+            
+            risk_info += f"\n**💡 Action:** {risk_pred['recommendation']}"
+            
+            if risk_pred['accident_probability'] > 60:
+                risk_panel.error(risk_info)
+            elif risk_pred['accident_probability'] > 40:
+                risk_panel.warning(risk_info)
+            else:
+                risk_panel.info(risk_info)
             
             # Update statistics
             stats_data = {
@@ -551,14 +616,7 @@ def main():
             - Identifies overcrowded grid cells
             - Tracks multiple hotspots
             - Boundary violation alerts
-            
-            ### 🎯 For Hackathon Demo
-            
-            1. **Upload a crowd video** for smooth demo
-            2. **Adjust density thresholds** to trigger different alerts
-            3. **Show heatmap** to visualize crowd concentration
-            4. **Demonstrate alarms** at different density levels
-            5. **Export statistics** for presentation
+    
             
             ### 💡 What Makes This Unique
             
