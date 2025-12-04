@@ -117,7 +117,7 @@ class CrowdDensityDetector:
                     time.sleep(0.05)
         except Exception as e:
             # For Mac/Linux or if winsound fails
-            print(f"\n🚨 ALARM: {alarm_type.upper()} 🚨")
+            print(f"\nALARM: {alarm_type.upper()}")
     
     def trigger_alarm(self, alarm_type='overcrowding'):
         """Trigger alarm with cooldown"""
@@ -397,7 +397,7 @@ class CrowdDensityDetector:
             recommendation = '⚠️ URGENT: Stop entry immediately. Deploy crowd control.'
         else:
             risk_level = 'IMMINENT'
-            recommendation = 'CRITICAL: EVACUATION NEEDED! Accident likely within 2 minutes!'
+            recommendation = '🚨 CRITICAL: EVACUATION NEEDED! Accident likely within 2 minutes!'
         
         return {
             'accident_probability': round(accident_probability, 1),
@@ -409,9 +409,12 @@ class CrowdDensityDetector:
             'acceleration': round(acceleration, 2)
         }
     
-    def check_boundary_violations(self, detections):
-        """Check boundary violations"""
-        if self.boundary_line is None:
+    def check_boundary_violations(self, detections, boundary_enabled=True):
+        """
+        Check boundary violations
+        boundary_enabled: If False, always return no violations
+        """
+        if not boundary_enabled or self.boundary_line is None:
             return False, []
         
         violators = []
@@ -460,8 +463,8 @@ class CrowdDensityDetector:
         # NEW: Predict accident risk based on density trends
         self.risk_prediction = self.predict_accident_risk(density_score, self.stats['density_history'])
         
-        # Check violations
-        has_violation, violators = self.check_boundary_violations(detections)
+        # Check violations - pass boundary_enabled flag
+        has_violation, violators = self.check_boundary_violations(detections, boundary_enabled=show_boundary)
         if has_violation:
             self.stats['violations'] += 1
         
@@ -489,7 +492,7 @@ class CrowdDensityDetector:
             cv2.circle(vis_frame, (cx, cy), 4, box_color, -1)
             
             if is_violator:
-                cv2.putText(vis_frame, 'VIOLATION', (x1, y1 - 10),
+                cv2.putText(vis_frame, '⚠️ VIOLATION', (x1, y1 - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
         
         # Draw info panel with density information
@@ -534,17 +537,21 @@ class CrowdDensityDetector:
                    (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, critical_color, 2)
         
         y_pos += 40
-        # Violations
-        if has_violation:
-            cv2.putText(vis_frame, f'VIOLATIONS: {len(violators)}', 
-                       (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
-            # Flash effect for violations
-            if int(time.time() * 2) % 2 == 0:
-                cv2.rectangle(vis_frame, (0, 0), (vis_frame.shape[1], vis_frame.shape[0]),
-                             (0, 0, 255), 15)
+        # Violations - ONLY show if boundary is enabled
+        if show_boundary and self.boundary_line is not None:
+            if has_violation:
+                cv2.putText(vis_frame, f'VIOLATIONS: {len(violators)}', 
+                           (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 3)
+                # Flash effect for violations
+                if int(time.time() * 2) % 2 == 0:
+                    cv2.rectangle(vis_frame, (0, 0), (vis_frame.shape[1], vis_frame.shape[0]),
+                                 (0, 0, 255), 15)
+            else:
+                cv2.putText(vis_frame, 'No Violations', 
+                           (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         else:
-            cv2.putText(vis_frame, '✅ No Violations', 
-                       (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(vis_frame, 'Boundary: Disabled', 
+                       (15, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (150, 150, 150), 2)
         
         # Trigger alarms based on conditions
         alarm_triggered = False
@@ -557,8 +564,8 @@ class CrowdDensityDetector:
                 alarm_type = 'IMMINENT ACCIDENT RISK!'
                 self.stats['alerts_triggered'] += 1
         
-        # PRIORITY 2: Boundary violations
-        elif has_violation:
+        # PRIORITY 2: Boundary violations (ONLY if boundary is enabled)
+        elif has_violation and show_boundary and self.boundary_line is not None:
             if self.trigger_alarm('violation'):
                 alarm_triggered = True
                 alarm_type = 'BOUNDARY VIOLATION'
@@ -620,7 +627,7 @@ class CrowdDensityDetector:
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = int(cap.get(cv2.CAP_PROP_FPS)) or 30
         
-        print(f"Video size: {frame_width}x{frame_height} @ {fps} FPS")
+        print(f"📐 Video size: {frame_width}x{frame_height} @ {fps} FPS")
         
         # Get first frame for boundary setup
         ret, first_frame = cap.read()
